@@ -1,0 +1,8 @@
+*.swp
+Downloads/
+.idea/
+*.jpg
+*.png
+*.gif
+.DS_Store
+*.txt
