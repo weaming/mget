@@ -23,7 +23,7 @@ var (
 func NewFileDownloader(url string, file *os.File, size int64) (*FileDownloader, error) {
 	if size <= 0 {
 		// 获取文件信息
-		resp, err := http.Get(url)
+		resp, err := http.Head(url)
 		if err != nil {
 			return nil, err
 		}
@@ -59,22 +59,36 @@ type FileDownloader struct {
 	status Status
 }
 
+/*
+Assuming that the entity contains a total of 1234 bytes:
+. The first 500 bytes:
+bytes 0-499/1234
+. The second 500 bytes:
+bytes 500-999/1234
+. All except for the first 500 bytes:
+bytes 500-1233/1234
+. The last 500 bytes:
+bytes 734-1233/1234
+*/
+
 // 开始下载
 func (f *FileDownloader) Start() {
 	go func() {
 		if f.Size <= 0 {
 			f.BlockList = append(f.BlockList, Block{0, -1})
+			f.Size = 1
 		} else {
 			blockSize := f.Size / int64(MaxThread)
+			// start from 0
 			var begin int64
 			// 数据平均分配给各个线程
 			for i := 0; i < MaxThread; i++ {
-				var end = (int64(i) + 1) * blockSize
+				var end = (int64(i)+1)*blockSize - 1
 				f.BlockList = append(f.BlockList, Block{begin, end})
 				begin = end + 1
 			}
 			// 将余出数据分配给最后一个线程
-			f.BlockList[MaxThread-1].End += f.Size - f.BlockList[MaxThread-1].End
+			f.BlockList[MaxThread-1].End += f.Size - f.BlockList[MaxThread-1].End - 1
 		}
 
 		f.touch(f.onStart)
@@ -157,7 +171,7 @@ func (f *FileDownloader) downloadBlock(id int) error {
 		bufSize := int64(len(buf[:n]))
 		if end != -1 {
 			// 检查下载的大小是否超出需要下载的大小
-			// 这里End+1是因为http的Range的EOL是包括在需要下载的数据内的
+			// 这里End+1是因为http的Range的EOF是包括在需要下载的数据内的
 			// 比如 0-1 的长度其实是2，所以这里end需要+1
 			needSize := f.BlockList[id].End + 1 - f.BlockList[id].Begin
 			if bufSize > needSize {

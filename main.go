@@ -151,7 +151,8 @@ func multiRangeDownload(url, out string) {
 
 	FileDownloader.OnStart(func() {
 		log.Printf("Start download %v\n", out)
-		format := "\r%v/%v [%s] %v kB/s %v"
+		format := "\r%12d/%v [%s] %9d kB/s %v"
+		var lastSpeed int64
 		for {
 			status := FileDownloader.GetStatus()
 			i := float64(status.Downloaded) / float64(FileDownloader.Size) * 50
@@ -159,13 +160,14 @@ func multiRangeDownload(url, out string) {
 
 			select {
 			case <-exit:
-				fmt.Printf(format, status.Downloaded, FileDownloader.Size, h, 0, "[FINISHED]\n")
+				fmt.Printf(format, status.Downloaded, FileDownloader.Size, h, lastSpeed, "[ FINISHED! ]\n")
 				os.Stdout.Sync()
 				_wg.Done()
 				// wait _wg to end
 				time.Sleep(time.Second * 1)
 			default:
-				fmt.Printf(format, status.Downloaded, FileDownloader.Size, h, status.Speeds/1024, "[DOWNLOADING]")
+				lastSpeed = status.Speeds / 1024
+				fmt.Printf(format, status.Downloaded, FileDownloader.Size, h, lastSpeed, "[DOWNLOADING]")
 				os.Stdout.Sync()
 				time.Sleep(time.Second * 1)
 			}
