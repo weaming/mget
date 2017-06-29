@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -88,18 +89,23 @@ func downloadIt(url, outfile string) {
 	if err == nil {
 		fmt.Printf("Ignore existed: %v\n", outfile)
 		return
-	} else {
-		defer log.Printf("%v => %v\n", url, outfile)
 	}
 
 	if multiParts {
-		multiRangeDownload(url, outfile)
+		err = multiRangeDownload(url, outfile)
 	} else {
-		downloadAsOne(url, outfile)
+		err = downloadAsOne(url, outfile)
+	}
+
+	if err != nil {
+		log.Printf(err.Error())
+		os.Exit(1)
+	} else {
+		log.Printf("%v => %v\n", url, outfile)
 	}
 }
 
-func downloadAsOne(url, out string) {
+func downloadAsOne(url, out string) error {
 	resp, err := client.Get(url)
 
 	if resp.Body != nil {
@@ -107,35 +113,42 @@ func downloadAsOne(url, out string) {
 	}
 
 	if err != nil {
-		log.Println("Trouble making GET request!")
-		return
+		return errors.New("Trouble making GET request!")
 	}
 
 	contents, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		log.Println("Trouble reading reesponse body!")
-		return
+		return errors.New("Trouble reading reesponse body!")
 	}
 
 	err = ioutil.WriteFile(out, contents, 0644)
 	if err != nil {
-		log.Println("Trouble creating file!")
-		return
+		return errors.New("Trouble creating file!")
 	}
+	return nil
 }
 
-func multiRangeDownload(url, out string) {
+func multiRangeDownload(url, out string) (err error) {
 	outfile, err := os.Create(out)
 	if err != nil {
-		log.Println(err)
-		return
+		return err
 	}
-	defer outfile.Close()
+	defer func() {
+		// get size
+		fi, _ := outfile.Stat()
+		size := fi.Size()
+		// then close it
+		outfile.Close()
+
+		// delete it if blank
+		if size == 0 {
+			os.Remove(out)
+		}
+	}()
 
 	FileDownloader, err := NewFileDownloader(url, outfile, -1)
 	if err != nil {
-		log.Println(err)
-		return
+		return err
 	}
 
 	var _wg sync.WaitGroup
@@ -177,4 +190,5 @@ func multiRangeDownload(url, out string) {
 	_wg.Add(1)
 	FileDownloader.Start()
 	_wg.Wait()
+	return nil
 }

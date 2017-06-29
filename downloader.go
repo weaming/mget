@@ -32,6 +32,10 @@ func NewFileDownloader(url string, file *os.File, size int64) (*FileDownloader, 
 		size = resp.ContentLength
 	}
 
+	if size <= 0 {
+		return nil, errors.New("HTTP HEAD response without \"Content-Length\"")
+	}
+
 	f := &FileDownloader{
 		Url:  url,
 		Size: size,
