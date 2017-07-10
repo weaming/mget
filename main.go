@@ -8,9 +8,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	fp "path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -20,6 +22,8 @@ const TIMEOUT = 20
 var wg sync.WaitGroup
 var outfile = ""
 var multiParts = true
+var exitbyuser = make(chan bool)
+var exited = make(chan bool)
 
 var client = &http.Client{
 	Transport: &http.Transport{
@@ -28,9 +32,26 @@ var client = &http.Client{
 	Timeout: TIMEOUT * time.Second,
 }
 
+func isError(err error) bool {
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+
+	return (err != nil)
+}
+
+func delete(path string) {
+	var err = os.Remove(path)
+	if isError(err) {
+		return
+	}
+
+	log.Printf("deleted file %v\n", path)
+}
+
 func main() {
 	flag.StringVar(&outfile, "o", outfile, "Output file path.")
-	flag.BoolVar(&multiParts, "multi", multiParts, "Download the file by multiple parts")
+	flag.BoolVar(&multiParts, "m", multiParts, "Download the file by multiple parts")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s URL\n\n", os.Args[0])
@@ -69,6 +90,24 @@ func main() {
 		}
 	}
 
+	// handle the signal SIGINT
+	c := make(chan os.Signal, 1)
+	//signal.Notify(c, syscall.SIGINT, syscall.SIGQUIT)
+	signal.Notify(c, syscall.SIGINT)
+
+	// add, done if download success or exit explicityly
+	wg.Add(1)
+	go func() {
+		for _ = range c {
+			// captured the cancle signal
+			exitbyuser <- true
+			// wait for releasing the file
+			<-exited
+			delete(outfile)
+			os.Exit(666)
+		}
+	}()
+
 	wg.Add(1)
 	go downloadIt(url, outfile)
 	wg.Wait()
@@ -99,9 +138,10 @@ func downloadIt(url, outfile string) {
 
 	if err != nil {
 		log.Printf(err.Error())
-		os.Exit(1)
 	} else {
 		log.Printf("%v => %v\n", url, outfile)
+		// download success
+		wg.Done()
 	}
 }
 
@@ -139,6 +179,8 @@ func multiRangeDownload(url, out string) (err error) {
 		size := fi.Size()
 		// then close it
 		outfile.Close()
+		// notify the file has been released
+		exited <- true
 
 		// delete it if blank
 		if size == 0 {
@@ -153,6 +195,14 @@ func multiRangeDownload(url, out string) (err error) {
 
 	var _wg sync.WaitGroup
 	var exit = make(chan bool)
+	go func() {
+		// block until exit by user
+		<-exitbyuser
+		// notify downloader to exit
+		FileDownloader.Pause()
+		exit <- true
+		err = errors.New("Canceled by user!")
+	}()
 
 	FileDownloader.OnFinish(func() {
 		exit <- true
@@ -176,8 +226,7 @@ func multiRangeDownload(url, out string) (err error) {
 				fmt.Printf(format, status.Downloaded, FileDownloader.Size, h, lastSpeed, "[ FINISHED! ]\n")
 				os.Stdout.Sync()
 				_wg.Done()
-				// wait _wg to end
-				time.Sleep(time.Second * 1)
+				return
 			default:
 				lastSpeed = status.Speeds / 1024
 				fmt.Printf(format, status.Downloaded, FileDownloader.Size, h, lastSpeed, "[DOWNLOADING]")
@@ -190,5 +239,5 @@ func multiRangeDownload(url, out string) (err error) {
 	_wg.Add(1)
 	FileDownloader.Start()
 	_wg.Wait()
-	return nil
+	return
 }

@@ -273,7 +273,6 @@ func (f *FileDownloader) OnFinish(fn func()) {
 }
 
 // 任务出错时触发的事件
-//
 // errCode为错误码，errStr为错误描述
 func (f *FileDownloader) OnError(fn func(int, error)) {
 	f.onError = fn
