@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -207,6 +208,24 @@ func (f *FileDownloader) downloadBlock(id int) error {
 	}
 
 	return nil
+}
+
+func (f *FileDownloader) HumanSize() string {
+	units := map[int]string{
+		0: "bytes",
+		1: "KB",
+		2: "MB",
+		3: "GB",
+		4: "PB",
+	}
+	tmp := float64(f.Size)
+	for i := 0; i <= 4; i++ {
+		if tmp < 1024 {
+			return fmt.Sprintf("%.3f %v", tmp, units[i])
+		}
+		tmp = tmp / 1024
+	}
+	return fmt.Sprintf("%v %v", tmp, "Boom")
 }
 
 func (f *FileDownloader) startGetSpeeds() {
