@@ -22,8 +22,8 @@ const TIMEOUT = 20
 var wg sync.WaitGroup
 var outfile = ""
 var multiParts = true
-var exitbyuser = make(chan bool)
-var exited = make(chan bool)
+var exitbyuser = make(chan bool, 1)
+var closedFile = make(chan bool, 1)
 
 var client = &http.Client{
 	Transport: &http.Transport{
@@ -129,7 +129,7 @@ func multiRangeDownload(url, out string) (err error) {
 		// then close it
 		outfile.Close()
 		// notify the file has been released
-		exited <- true
+		closedFile <- true
 
 		// delete it if blank
 		if size == 0 {
@@ -245,7 +245,7 @@ func main() {
 			// captured the cancle signal
 			exitbyuser <- true
 			// wait for releasing the file
-			<-exited
+			<-closedFile
 			delete(outfile)
 			os.Exit(69)
 		}
