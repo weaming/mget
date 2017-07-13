@@ -2,9 +2,8 @@
 
 Download file using multiple threads!
 
-    Usage: mget URL
+    Usage: mget <Options> <URL>
 
-      -multi
-            Download the file by multiple parts (default true)
+      -m Download the file by multiple parts (default true)
       -o string
             Output file path.

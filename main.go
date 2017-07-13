@@ -19,10 +19,12 @@ import (
 // HTTP GET timeout
 const TIMEOUT = 20
 
-var wg sync.WaitGroup
-var outfile = ""
+var outfile string
 var multiParts = true
-var exitbyuser = make(chan bool, 1)
+var wg sync.WaitGroup
+var cancelByUser = make(chan bool, 1)
+
+// must use buffer
 var closedFile = make(chan bool, 1)
 
 var client = &http.Client{
@@ -45,10 +47,10 @@ func isError(err error) bool {
 		fmt.Println(err.Error())
 	}
 
-	return (err != nil)
+	return err != nil
 }
 
-func delete(path string) {
+func deleteFile(path string) {
 	var err = os.Remove(path)
 	if isError(err) {
 		return
@@ -146,7 +148,7 @@ func multiRangeDownload(url, out string) (err error) {
 	var exit = make(chan bool)
 	go func() {
 		// block until exit by user
-		<-exitbyuser
+		<-cancelByUser
 		// notify downloader to exit
 		FileDownloader.Pause()
 		exit <- true
@@ -241,12 +243,12 @@ func main() {
 	// add, done if download success or exit explicityly
 	wg.Add(1)
 	go func() {
-		for _ = range c {
-			// captured the cancle signal
-			exitbyuser <- true
+		for range c {
+			// captured the cancel signal
+			cancelByUser <- true
 			// wait for releasing the file
 			<-closedFile
-			delete(outfile)
+			deleteFile(outfile)
 			os.Exit(69)
 		}
 	}()
