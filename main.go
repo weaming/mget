@@ -78,6 +78,10 @@ func downloadIt(url, outfile string) {
 
 	if multiParts {
 		err = multiRangeDownload(url, outfile)
+		if err != nil {
+			log.Println(err)
+			err = downloadAsOne(url, outfile)
+		}
 	} else {
 		err = downloadAsOne(url, outfile)
 	}
@@ -89,6 +93,7 @@ func downloadIt(url, outfile string) {
 		case *FileBrokenError:
 			log.Println("broken file error:", err)
 		}
+		os.Exit(1)
 	} else {
 		log.Printf("%v => %v\n", url, outfile)
 		// download success
