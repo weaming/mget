@@ -1,5 +1,8 @@
 package main
 
+// interrupt by ^C -> download function -> stop downloading -> release file -> check and delete file
+// download success -> close file -> check and delete file
+
 import (
 	"errors"
 	"flag"
@@ -21,11 +24,14 @@ const TIMEOUT = 20
 
 var outfile string
 var multiParts = true
-var wg sync.WaitGroup
+
 var cancelByUser = make(chan bool, 1)
 
 // must use buffer
 var closedFile = make(chan bool, 1)
+
+// handle the signal SIGINT
+var interruptSignalChannel = make(chan os.Signal, 1)
 
 var client = &http.Client{
 	Transport: &http.Transport{
@@ -42,28 +48,66 @@ func (e *FileBrokenError) Error() string {
 	return e.msg
 }
 
-func isError(err error) bool {
-	if err != nil {
-		fmt.Println(err.Error())
+func main() {
+	flag.StringVar(&outfile, "o", outfile, "Output file path.")
+	flag.BoolVar(&multiParts, "m", multiParts, "Download the file by multiple parts")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s URL\n\n", os.Args[0])
+		flag.PrintDefaults()
+	}
+	// call Parse() first!
+	flag.Parse()
+
+	url := flag.Arg(0)
+	if url == "" {
+		fmt.Fprintf(os.Stderr, "Please give the URL!\n")
+		os.Exit(1)
 	}
 
-	return err != nil
-}
-
-func deleteFile(path string) {
-	var err = os.Remove(path)
-	if isError(err) {
-		return
+	if flag.Arg(1) != "" {
+		outfile = flag.Arg(1)
 	}
 
-	log.Printf("deleted unfinished file: %v\n", path)
+	if outfile == "" {
+		outfile = fp.Base(url)
+	}
+
+	start := time.Now()
+	defer func() {
+		elapsed := time.Since(start)
+		log.Printf("Time took %s", elapsed)
+	}()
+
+	// create dir if not exists
+	outdir := fp.Dir(outfile)
+	var _, err = os.Stat(outdir)
+	if os.IsNotExist(err) {
+		err := os.MkdirAll(outdir, 0755)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	//signal.Notify(interruptSignalChannel, syscall.SIGINT, syscall.SIGQUIT)
+	signal.Notify(interruptSignalChannel, syscall.SIGINT)
+
+	// add, done if download success or exit explicitly
+	go func() {
+		for range interruptSignalChannel {
+			// captured the cancel signal
+			cancelByUser <- true
+			// wait for releasing the file
+			<-closedFile
+			deleteFile(outfile)
+			os.Exit(2)
+		}
+	}()
+
+	downloadIt(url, outfile)
 }
 
 func downloadIt(url, outfile string) {
-	defer func() {
-		wg.Done()
-	}()
-
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Println("Recovered in downloadIt(): ", r)
@@ -73,6 +117,7 @@ func downloadIt(url, outfile string) {
 	var _, err = os.Stat(outfile)
 	if err == nil {
 		fmt.Printf("Ignore existed: %v\n", outfile)
+		os.Exit(1)
 		return
 	}
 
@@ -93,11 +138,10 @@ func downloadIt(url, outfile string) {
 		case *FileBrokenError:
 			log.Println("broken file error:", err)
 		}
-		os.Exit(1)
+		os.Exit(3)
 	} else {
 		log.Printf("%v => %v\n", url, outfile)
 		// download success
-		wg.Done()
 	}
 }
 
@@ -149,25 +193,29 @@ func multiRangeDownload(url, out string) (err error) {
 		return err
 	}
 
-	var _wg sync.WaitGroup
-	var exit = make(chan bool)
+	// finish downloading or canceled by user, print result
+	var exitSignal = make(chan bool)
+	// if canceled by user then pause downloading
 	go func() {
-		// block until exit by user
+		// block until exitSignal by user
 		<-cancelByUser
-		// notify downloader to exit
+		// notify downloader to exitSignal
 		FileDownloader.Pause()
-		exit <- true
+		exitSignal <- true
 		err = errors.New("canceled by user!")
+		// sleep 3 second gives chance to call os.Exit(2)
+		time.Sleep(time.Second * time.Duration(3))
 	}()
 
 	FileDownloader.OnFinish(func() {
-		exit <- true
+		exitSignal <- true
 	})
 
 	FileDownloader.OnError(func(errCode int, err error) {
 		log.Println(errCode, err)
 	})
 
+	var waitForDownloadFinish sync.WaitGroup
 	FileDownloader.OnStart(func() {
 		log.Printf("start download %v\n", out)
 		log.Printf("total size: %v\n", FileDownloader.HumanSize())
@@ -179,10 +227,11 @@ func multiRangeDownload(url, out string) (err error) {
 			h := strings.Repeat("=", int(i)) + strings.Repeat(" ", 50-int(i))
 
 			select {
-			case <-exit:
+			case <-exitSignal:
+				// finish downloading
 				fmt.Printf(format, status.Downloaded, FileDownloader.Size, h, lastSpeed, "[ FINISHED! ]\n")
 				os.Stdout.Sync()
-				_wg.Done()
+				waitForDownloadFinish.Done()
 				return
 			default:
 				lastSpeed = status.Speeds / 1024
@@ -193,72 +242,8 @@ func multiRangeDownload(url, out string) (err error) {
 		}
 	})
 
-	_wg.Add(1)
+	waitForDownloadFinish.Add(1)
 	FileDownloader.Start()
-	_wg.Wait()
+	waitForDownloadFinish.Wait()
 	return
-}
-
-func main() {
-	flag.StringVar(&outfile, "o", outfile, "Output file path.")
-	flag.BoolVar(&multiParts, "m", multiParts, "Download the file by multiple parts")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s URL\n\n", os.Args[0])
-		flag.PrintDefaults()
-	}
-	// call Parse() first!
-	flag.Parse()
-
-	url := flag.Arg(0)
-	if url == "" {
-		fmt.Fprintf(os.Stderr, "Please give the URL!\n")
-		os.Exit(1)
-	}
-
-	if flag.Arg(1) != "" {
-		outfile = flag.Arg(1)
-	}
-
-	if outfile == "" {
-		outfile = fp.Base(url)
-	}
-
-	start := time.Now()
-	defer func() {
-		elapsed := time.Since(start)
-		log.Printf("Time took %s", elapsed)
-	}()
-
-	// create dir if not exists
-	outdir := fp.Dir(outfile)
-	var _, err = os.Stat(outdir)
-	if os.IsNotExist(err) {
-		err := os.MkdirAll(outdir, 0755)
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	// handle the signal SIGINT
-	c := make(chan os.Signal, 1)
-	//signal.Notify(c, syscall.SIGINT, syscall.SIGQUIT)
-	signal.Notify(c, syscall.SIGINT)
-
-	// add, done if download success or exit explicityly
-	wg.Add(1)
-	go func() {
-		for range c {
-			// captured the cancel signal
-			cancelByUser <- true
-			// wait for releasing the file
-			<-closedFile
-			deleteFile(outfile)
-			os.Exit(69)
-		}
-	}()
-
-	wg.Add(1)
-	go downloadIt(url, outfile)
-	wg.Wait()
 }
