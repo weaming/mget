@@ -1,11 +1,11 @@
 name: mget
 version: 0.1.0
-summary: wget like tool
+summary: command to download file
 description: |
     wget like tool written in golang
 
-grade: devel
-confinement: devmode
+grade: stable
+confinement: strict
 
 parts:
     mget:
