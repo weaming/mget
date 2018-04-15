@@ -1,0 +1,21 @@
+name: mget
+version: 0.1.2
+summary: command to download file
+description: |
+  wget like tool written in golang
+
+grade: stable
+confinement: strict
+
+parts:
+  mget:
+    source: .
+    plugin: go
+    go-importpath: github.com/weaming/mget
+
+apps:
+  mget:
+    command: mget
+    plugs:
+      - home
+      - network
