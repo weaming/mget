@@ -16,6 +16,6 @@ parts:
 apps:
   mget:
     command: mget
-plugs:
-  home:
-  network:
+    plugs:
+      - home
+      - network
