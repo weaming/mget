@@ -52,31 +52,23 @@ type FileDownloader struct {
 	File *os.File // 要写入的文件
 
 	BlockList []Block // 用于记录未下载的文件块起始位置
+	status    Status
 
 	onStart  func()
-	onPause  func()
-	onResume func()
-	onDelete func()
 	onFinish func()
-	onError  func(int, error)
-
-	paused bool
-	status Status
+	onError  func(error)
 }
 
-/*
-Assuming that the entity contains a total of 1234 bytes:
-. The first 500 bytes:
-bytes 0-499/1234
-. The second 500 bytes:
-bytes 500-999/1234
-. All except for the first 500 bytes:
-bytes 500-1233/1234
-. The last 500 bytes:
-bytes 734-1233/1234
-*/
+type Status struct {
+	Downloaded int64
+	Speeds     int64
+}
 
-// 开始下载
+type Block struct {
+	Begin int64 `json:"begin"`
+	End   int64 `json:"end"`
+}
+
 func (f *FileDownloader) Start() {
 	go func() {
 		if f.Size <= 0 {
@@ -100,7 +92,7 @@ func (f *FileDownloader) Start() {
 		// 开始下载
 		err := f.download()
 		if err != nil {
-			f.touchOnError(0, err)
+			f.touchOnError(err)
 			return
 		}
 	}()
@@ -109,7 +101,8 @@ func (f *FileDownloader) Start() {
 func (f *FileDownloader) download() error {
 	f.startGetSpeeds()
 
-	ok := make(chan bool, MaxThread)
+	size := len(f.BlockList)
+	ok := make(chan bool, size)
 	for i := range f.BlockList {
 		go func(id int) {
 			defer func() {
@@ -119,7 +112,7 @@ func (f *FileDownloader) download() error {
 			for {
 				err := f.downloadBlock(id)
 				if err != nil {
-					f.touchOnError(0, err)
+					f.touchOnError(err)
 					// 重新下载
 					continue
 				}
@@ -128,17 +121,10 @@ func (f *FileDownloader) download() error {
 		}(i)
 	}
 
-	for i := 0; i < MaxThread; i++ {
+	for i := 0; i < size; i++ {
 		<-ok
 	}
-	// 检查是否为暂停导致的“下载完成”
-	if f.paused {
-		f.touch(f.onPause)
-		return nil
-	}
-	f.paused = true
 	f.touch(f.onFinish)
-
 	return nil
 }
 
@@ -166,18 +152,12 @@ func (f *FileDownloader) downloadBlock(id int) error {
 
 	var buf = make([]byte, CacheSize)
 	for {
-		if f.paused == true {
-			// 下载暂停
-			return nil
-		}
-
 		n, e := resp.Body.Read(buf)
 
+		// bufSize 可能小于 n 吗?
 		bufSize := int64(len(buf[:n]))
 		if end != -1 {
 			// 检查下载的大小是否超出需要下载的大小
-			// 这里End+1是因为http的Range的EOF是包括在需要下载的数据内的
-			// 比如 0-1 的长度其实是2，所以这里end需要+1
 			needSize := f.BlockList[id].End + 1 - f.BlockList[id].Begin
 			if bufSize > needSize {
 				// 数据大小不正常
@@ -192,7 +172,7 @@ func (f *FileDownloader) downloadBlock(id int) error {
 			}
 		}
 		// 将缓冲数据写入硬盘
-		f.File.WriteAt(buf[:n], f.BlockList[id].Begin)
+		f.File.WriteAt(buf[:bufSize], f.BlockList[id].Begin)
 
 		// 更新已下载大小
 		f.status.Downloaded += bufSize
@@ -208,6 +188,10 @@ func (f *FileDownloader) downloadBlock(id int) error {
 	}
 
 	return nil
+}
+
+func (f *FileDownloader) Status() Status {
+	return f.status
 }
 
 func (f *FileDownloader) HumanSize() string {
@@ -228,62 +212,9 @@ func (f *FileDownloader) HumanSize() string {
 	return fmt.Sprintf("%v %v", tmp, "Boom")
 }
 
-func (f *FileDownloader) startGetSpeeds() {
-	go func() {
-		var old = f.status.Downloaded
-		for {
-			if f.paused {
-				f.status.Speeds = 0
-				return
-			}
-			time.Sleep(time.Second * 1)
-			f.status.Speeds = f.status.Downloaded - old
-			old = f.status.Downloaded
-		}
-	}()
-}
-
-// 获取下载统计信息
-func (f FileDownloader) GetStatus() Status {
-	return f.status
-}
-
-// 暂停下载
-func (f *FileDownloader) Pause() {
-	f.paused = true
-}
-
-// 继续下载
-func (f *FileDownloader) Resume() {
-	f.paused = false
-	go func() {
-		if f.BlockList == nil {
-			f.touchOnError(0, errors.New("BlockList == nil, can not get block info"))
-			return
-		}
-
-		f.touch(f.onResume)
-		err := f.download()
-		if err != nil {
-			f.touchOnError(0, err)
-			return
-		}
-	}()
-}
-
 // 任务开始时触发的事件
 func (f *FileDownloader) OnStart(fn func()) {
 	f.onStart = fn
-}
-
-// 任务暂停时触发的事件
-func (f *FileDownloader) OnPause(fn func()) {
-	f.onPause = fn
-}
-
-// 任务继续时触发的事件
-func (f *FileDownloader) OnResume(fn func()) {
-	f.onResume = fn
 }
 
 // 任务完成时触发的事件
@@ -293,7 +224,7 @@ func (f *FileDownloader) OnFinish(fn func()) {
 
 // 任务出错时触发的事件
 // errCode为错误码，errStr为错误描述
-func (f *FileDownloader) OnError(fn func(int, error)) {
+func (f *FileDownloader) OnError(fn func(error)) {
 	f.onError = fn
 }
 
@@ -305,18 +236,18 @@ func (f FileDownloader) touch(fn func()) {
 }
 
 // 触发Error事件
-func (f FileDownloader) touchOnError(errCode int, err error) {
+func (f FileDownloader) touchOnError(err error) {
 	if f.onError != nil {
-		go f.onError(errCode, err)
+		go f.onError(err)
 	}
 }
-
-type Status struct {
-	Downloaded int64
-	Speeds     int64
-}
-
-type Block struct {
-	Begin int64 `json:"begin"`
-	End   int64 `json:"end"`
+func (f *FileDownloader) startGetSpeeds() {
+	go func() {
+		var old = f.status.Downloaded
+		for {
+			time.Sleep(time.Second * 1)
+			f.status.Speeds = f.status.Downloaded - old
+			old = f.status.Downloaded
+		}
+	}()
 }

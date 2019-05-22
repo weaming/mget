@@ -7,9 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	fp "path/filepath"
@@ -19,34 +17,16 @@ import (
 	"time"
 )
 
-// HTTP GET timeout
-const TIMEOUT = 20
+var (
+	outfile    string
+	multiParts = true
 
-var outfile string
-var multiParts = true
-
-var cancelByUser = make(chan bool, 1)
-
-// must use buffer
-var closedFile = make(chan bool, 1)
-
-// handle the signal SIGINT
-var interruptSignalChannel = make(chan os.Signal, 1)
-
-var client = &http.Client{
-	Transport: &http.Transport{
-		MaxIdleConnsPerHost: 30,
-	},
-	Timeout: TIMEOUT * time.Second,
-}
-
-type FileBrokenError struct {
-	msg string // description of error
-}
-
-func (e *FileBrokenError) Error() string {
-	return e.msg
-}
+	cancelByUser = make(chan bool, 1)
+	// must use buffer
+	closedFile = make(chan bool, 1)
+	// handle the signal SIGINT
+	interruptSignalChannel = make(chan os.Signal, 1)
+)
 
 func main() {
 	flag.StringVar(&outfile, "o", outfile, "Output file path.")
@@ -59,37 +39,32 @@ func main() {
 	// call Parse() first!
 	flag.Parse()
 
+	// parse url
 	url := flag.Arg(0)
 	if url == "" {
 		fmt.Fprintf(os.Stderr, "Please give the URL!\n")
 		os.Exit(1)
 	}
 
+	// parse outfile
 	if flag.Arg(1) != "" {
 		outfile = flag.Arg(1)
 	}
-
 	if outfile == "" {
 		outfile = fp.Base(url)
 	}
 
+	Start(url, outfile)
+}
+
+func Start(url, outfile string) {
 	start := time.Now()
 	defer func() {
 		elapsed := time.Since(start)
 		log.Printf("Time took %s", elapsed)
 	}()
 
-	// create dir if not exists
-	outdir := fp.Dir(outfile)
-	var _, err = os.Stat(outdir)
-	if os.IsNotExist(err) {
-		err := os.MkdirAll(outdir, 0755)
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	//signal.Notify(interruptSignalChannel, syscall.SIGINT, syscall.SIGQUIT)
+	PrepareDir(outfile, false)
 	signal.Notify(interruptSignalChannel, syscall.SIGINT)
 
 	// add, done if download success or exit explicitly
@@ -133,39 +108,16 @@ func downloadIt(url, outfile string) {
 
 	if err != nil {
 		switch err.(type) {
+		case *FileBrokenError:
+			log.Println("broken file:", err)
 		default:
 			log.Println(err)
-		case *FileBrokenError:
-			log.Println("broken file error:", err)
 		}
 		os.Exit(3)
 	} else {
-		log.Printf("%v => %v\n", url, outfile)
 		// download success
+		log.Printf("%v => %v\n", url, outfile)
 	}
-}
-
-func downloadAsOne(url, out string) error {
-	resp, err := client.Get(url)
-
-	if resp.Body != nil {
-		defer resp.Body.Close()
-	}
-
-	if err != nil {
-		return &FileBrokenError{"Trouble making GET request!"}
-	}
-
-	contents, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return errors.New("Trouble reading reesponse body!")
-	}
-
-	err = ioutil.WriteFile(out, contents, 0644)
-	if err != nil {
-		return errors.New("Trouble creating file!")
-	}
-	return nil
 }
 
 func multiRangeDownload(url, out string) (err error) {
@@ -184,7 +136,7 @@ func multiRangeDownload(url, out string) (err error) {
 
 		// delete it if blank
 		if size == 0 {
-			os.Remove(out)
+			deleteFile(out)
 		}
 	}()
 
@@ -195,12 +147,9 @@ func multiRangeDownload(url, out string) (err error) {
 
 	// finish downloading or canceled by user, print result
 	var exitSignal = make(chan bool)
-	// if canceled by user then pause downloading
 	go func() {
 		// block until exitSignal by user
 		<-cancelByUser
-		// notify downloader to exitSignal
-		FileDownloader.Pause()
 		exitSignal <- true
 		err = errors.New("canceled by user!")
 		// sleep 3 second gives chance to call os.Exit(2)
@@ -211,18 +160,20 @@ func multiRangeDownload(url, out string) (err error) {
 		exitSignal <- true
 	})
 
-	FileDownloader.OnError(func(errCode int, err error) {
-		log.Println(errCode, err)
+	FileDownloader.OnError(func(err error) {
+		log.Println(err)
 	})
 
 	var waitForDownloadFinish sync.WaitGroup
 	FileDownloader.OnStart(func() {
 		log.Printf("start download %v\n", out)
 		log.Printf("total size: %v\n", FileDownloader.HumanSize())
-		format := "\r%12d/%v [%s] %9d kB/s %v"
+		format := "\r%12d/%v [%s] %9d KB/s %v"
+
 		var lastSpeed int64
 		for {
-			status := FileDownloader.GetStatus()
+			// put here to sync between FileDownloader and current goroutine
+			status := FileDownloader.Status()
 			i := float64(status.Downloaded) / float64(FileDownloader.Size) * 50
 			h := strings.Repeat("=", int(i)) + strings.Repeat(" ", 50-int(i))
 

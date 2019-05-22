@@ -1,24 +1,28 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
+	"path"
+	"strings"
 )
 
-func isError(err error) bool {
-	if err != nil {
-		fmt.Println(err.Error())
-	}
-
-	return err != nil
-}
-
 func deleteFile(path string) {
-	var err = os.Remove(path)
-	if isError(err) {
+	err := os.Remove(path)
+	if err != nil {
+		log.Println(err)
 		return
 	}
+	log.Printf("deleted file: %v\n", path)
+}
 
-	log.Printf("deleted unfinished file: %v\n", path)
+func PrepareDir(filePath string, force bool) {
+	filePath = os.ExpandEnv(filePath)
+	if !force && !strings.HasSuffix(filePath, "/") {
+		filePath = path.Dir(filePath)
+	}
+	err := os.MkdirAll(filePath, os.FileMode(0755))
+	if err != nil {
+		log.Fatal(err)
+	}
 }
