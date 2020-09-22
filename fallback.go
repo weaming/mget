@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"time"
 )
@@ -18,24 +20,22 @@ var client = &http.Client{
 }
 
 func downloadAsOne(url, out string) error {
+	log.Println("download as one...")
+
 	resp, err := client.Get(url)
-
-	if resp.Body != nil {
-		defer resp.Body.Close()
-	}
-
 	if err != nil {
-		return &FileBrokenError{"Trouble making GET request!"}
+		return fmt.Errorf("download: making GET request")
 	}
+	defer resp.Body.Close()
 
 	contents, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return errors.New("Trouble reading reesponse body!")
+		return errors.New("download: reading response body")
 	}
 
 	err = ioutil.WriteFile(out, contents, 0644)
 	if err != nil {
-		return errors.New("Trouble creating file!")
+		return errors.New("download: creating file")
 	}
 	return nil
 }

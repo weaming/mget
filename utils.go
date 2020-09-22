@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"os/signal"
 	"path"
 	"strings"
 )
@@ -13,16 +14,23 @@ func deleteFile(path string) {
 		log.Println(err)
 		return
 	}
-	log.Printf("deleted file: %v\n", path)
+	log.Println("deleted file:", path)
 }
 
-func PrepareDir(filePath string, force bool) {
+func PrepareDir(filePath string) {
 	filePath = os.ExpandEnv(filePath)
-	if !force && !strings.HasSuffix(filePath, "/") {
+	if !strings.HasSuffix(filePath, "/") {
 		filePath = path.Dir(filePath)
 	}
 	err := os.MkdirAll(filePath, os.FileMode(0755))
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func captureInterrupt() {
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	<-interrupt
+	log.Fatal("Interrupt")
 }
