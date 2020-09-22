@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	fp "path/filepath"
-	"strings"
 	"time"
 )
 
@@ -119,23 +118,17 @@ func multiRangeDownload(url, out string) (err error) {
 	dl.OnStart(func() {
 		log.Printf("start download %v\n", out)
 		log.Printf("total size: %v\n", dl.HumanSize())
-		format := "\r%12d/%v [%s] %9d KB/s %v"
+		// format := "\r%12d/%v [%s] %9d KB/s %v"
+		format := "\r %9d KB/s %v"
 
-		var lastSpeed int64
 		status := dl.Status
-		var progress string
+		var lastSpeed int64
 		for {
-			// put here to sync between FileDownloader and current goroutine
-			status.WithLock(func() {
-				i := float64(status.Downloaded) / float64(dl.Size) * 50
-				progress = strings.Repeat("=", int(i)) + strings.Repeat(" ", 50-int(i))
-			}, false)
-
 			select {
 			case <-exitFnOnStart:
 				// finish downloading
 				status.WithLock(func() {
-					fmt.Printf(format, status.Downloaded, dl.Size, progress, lastSpeed, "[ FINISHED! ]")
+					fmt.Printf(format, lastSpeed, "[ FINISHED! ]")
 					os.Stdout.Sync()
 				}, false)
 				done <- true
@@ -143,7 +136,7 @@ func multiRangeDownload(url, out string) (err error) {
 			default:
 				status.WithLock(func() {
 					lastSpeed = status.Speeds / 1024
-					fmt.Printf(format, status.Downloaded, dl.Size, progress, lastSpeed, "[DOWNLOADING]")
+					fmt.Printf(format, lastSpeed, "[DOWNLOADING]")
 					os.Stdout.Sync()
 				}, false)
 			}
