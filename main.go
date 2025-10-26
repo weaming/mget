@@ -29,17 +29,12 @@ func init() {
 }
 
 func main() {
-	// parse url
 	url := flag.Arg(0)
 	if url == "" {
 		fmt.Fprintf(os.Stderr, "Please give the URL!\n")
 		os.Exit(1)
 	}
 
-	// parse outfile
-	if flag.Arg(1) != "" {
-		outfile = flag.Arg(1)
-	}
 	if outfile == "" {
 		outfile = fp.Base(url)
 	}
@@ -54,14 +49,21 @@ func start(url, outfile string) {
 	}(time.Now())
 	PrepareDir(outfile)
 
-	go captureInterrupt()
-	downloadIt(url, outfile)
+	done := make(chan bool)
+	go captureInterrupt(done)
+
+	go func() {
+		downloadIt(url, outfile)
+		done <- true
+	}()
+
+	<-done
 }
 
 func downloadIt(url, outfile string) error {
 	if _, err := os.Stat(outfile); err == nil {
-		log.Println("existed", outfile)
-		os.Exit(0)
+		log.Println("file already exists:", outfile)
+		return nil
 	}
 
 	var err error
@@ -105,9 +107,9 @@ func multiRangeDownload(url, out string) (err error) {
 	}
 
 	// finish downloading or canceled by user, print result
-	var exitFnOnStart = make(chan bool)
+	finishChan := make(chan bool)
 	dl.OnFinish(func() {
-		exitFnOnStart <- true
+		finishChan <- true
 	})
 
 	dl.OnError(func(err error) {
@@ -118,30 +120,29 @@ func multiRangeDownload(url, out string) (err error) {
 	dl.OnStart(func() {
 		log.Printf("start download %v\n", out)
 		log.Printf("total size: %v\n", dl.HumanSize())
-		// format := "\r%12d/%v [%s] %9d KB/s %v"
 		format := "\r %9d KB/s %v"
 
 		status := dl.Status
 		var lastSpeed int64
+		ticker := time.NewTicker(time.Millisecond * 500)
+		defer ticker.Stop()
+
 		for {
 			select {
-			case <-exitFnOnStart:
-				// finish downloading
+			case <-finishChan:
 				status.WithLock(func() {
 					fmt.Printf(format, lastSpeed, "[ FINISHED! ]")
 					os.Stdout.Sync()
 				}, false)
 				done <- true
 				return
-			default:
+			case <-ticker.C:
 				status.WithLock(func() {
 					lastSpeed = status.Speeds / 1024
 					fmt.Printf(format, lastSpeed, "[DOWNLOADING]")
 					os.Stdout.Sync()
 				}, false)
 			}
-
-			time.Sleep(time.Millisecond * 500)
 		}
 	})
 

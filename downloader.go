@@ -13,13 +13,22 @@ import (
 	"time"
 )
 
-var (
-	// 最大线程数量
-	MaxThread = 16
-	// 缓冲区大小
-	CacheSize = 1024
+const (
+	MaxThread   = 16
+	CacheSize   = 1024
+	MaxRetries  = 3
+	HTTPTimeout = 20
+)
 
+var (
 	sizeNotMatch = errors.New("size not match")
+
+	httpClient = &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConnsPerHost: 30,
+		},
+		Timeout: HTTPTimeout * time.Second,
+	}
 )
 
 type Status struct {
@@ -55,6 +64,8 @@ type FileDownloader struct {
 	onStart  func()
 	onFinish func()
 	onError  func(error)
+
+	stopChan chan struct{}
 }
 
 // 创建新的文件下载
@@ -76,10 +87,11 @@ func NewFileDownloader(url string, file *os.File, size int64) (*FileDownloader, 
 	}
 
 	dl := &FileDownloader{
-		Url:    url,
-		Size:   size,
-		File:   file,
-		Status: &Status{Downloaded: 0, Speeds: 0},
+		Url:      url,
+		Size:     size,
+		File:     file,
+		Status:   &Status{Downloaded: 0, Speeds: 0},
+		stopChan: make(chan struct{}),
 	}
 
 	return dl, nil
@@ -121,11 +133,16 @@ func (f *FileDownloader) download() {
 				wg.Done()
 			}()
 
-			for {
+			retries := 0
+			for retries < MaxRetries {
 				err := f.downloadBlock(id)
 				if err != nil {
-					f.emitErr(err)
-					// 重新下载
+					retries++
+					f.emitErr(fmt.Errorf("block %d download failed (attempt %d/%d): %w", id, retries, MaxRetries, err))
+					if retries >= MaxRetries {
+						return
+					}
+					time.Sleep(time.Second * time.Duration(retries))
 					continue
 				}
 				return
@@ -134,6 +151,7 @@ func (f *FileDownloader) download() {
 	}
 
 	wg.Wait()
+	close(f.stopChan)
 	f.emit(f.onFinish)
 }
 
@@ -142,7 +160,6 @@ func (f *FileDownloader) download() {
 func (f *FileDownloader) downloadBlock(id int) error {
 	begin := f.BlockList[id].Begin
 	end := f.BlockList[id].End
-	// log.Println("begin, end", begin, end)
 
 	request, err := http.NewRequest("GET", f.Url, nil)
 	if err != nil {
@@ -150,11 +167,11 @@ func (f *FileDownloader) downloadBlock(id int) error {
 	}
 
 	if end != -1 {
-		_range := "bytes=" + strconv.FormatInt(begin, 10) + "-" + strconv.FormatInt(end, 10)
-		request.Header.Set("Range", _range)
+		rangeHeader := "bytes=" + strconv.FormatInt(begin, 10) + "-" + strconv.FormatInt(end, 10)
+		request.Header.Set("Range", rangeHeader)
 	}
 
-	resp, err := http.DefaultClient.Do(request)
+	resp, err := httpClient.Do(request)
 	if err != nil {
 		return err
 	}
@@ -182,7 +199,10 @@ func (f *FileDownloader) downloadBlock(id int) error {
 		}
 		if bufSize > 0 {
 			// 将缓冲数据写入硬盘
-			f.File.WriteAt(buf[:bufSize], begin)
+			_, writeErr := f.File.WriteAt(buf[:bufSize], begin)
+			if writeErr != nil {
+				return fmt.Errorf("write to file failed: %w", writeErr)
+			}
 
 			// 更新已下载大小
 			f.Status.WithLock(func() {
@@ -247,12 +267,19 @@ func (f *FileDownloader) updateSpeeds() {
 	old := f.Status.Downloaded
 	f.Status.RUnlock()
 
+	ticker := time.NewTicker(time.Millisecond * 100)
+	defer ticker.Stop()
+
 	for {
-		time.Sleep(time.Millisecond * 100)
-		f.Status.WithLock(func() {
-			new := f.Status.Downloaded
-			f.Status.Speeds = (new - old) * 10
-			old = new
-		}, true)
+		select {
+		case <-f.stopChan:
+			return
+		case <-ticker.C:
+			f.Status.WithLock(func() {
+				new := f.Status.Downloaded
+				f.Status.Speeds = (new - old) * 10
+				old = new
+			}, true)
+		}
 	}
 }

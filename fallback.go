@@ -1,41 +1,29 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
-	"net/http"
-	"time"
+	"os"
 )
-
-// HTTP GET timeout
-const TIMEOUT = 20
-
-var client = &http.Client{
-	Transport: &http.Transport{
-		MaxIdleConnsPerHost: 30,
-	},
-	Timeout: TIMEOUT * time.Second,
-}
 
 func downloadAsOne(url, out string) error {
 	log.Println("download as one...")
 
-	resp, err := client.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
-		return fmt.Errorf("download: making GET request")
+		return fmt.Errorf("download: making GET request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	contents, err := ioutil.ReadAll(resp.Body)
+	contents, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return errors.New("download: reading response body")
+		return fmt.Errorf("download: reading response body: %w", err)
 	}
 
-	err = ioutil.WriteFile(out, contents, 0644)
+	err = os.WriteFile(out, contents, 0644)
 	if err != nil {
-		return errors.New("download: creating file")
+		return fmt.Errorf("download: creating file: %w", err)
 	}
 	return nil
 }

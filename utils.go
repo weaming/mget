@@ -28,9 +28,15 @@ func PrepareDir(filePath string) {
 	}
 }
 
-func captureInterrupt() {
+func captureInterrupt(done chan bool) {
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
-	<-interrupt
-	log.Fatal("Interrupt")
+
+	select {
+	case <-interrupt:
+		log.Fatal("Interrupt")
+	case <-done:
+		signal.Stop(interrupt)
+		return
+	}
 }
